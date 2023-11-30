@@ -1,0 +1,39 @@
+---
+title: "Example of wiriting probability scores and UMAP coodinates into FCS file as additional channels"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+This document describes an example for writing both probability scores and UMAP
+coodinates int FCS file as additional channels. The exported FCS file can be opened
+and viewed in any commercial and in-house flow cytometry software for viewing. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, message = FALSE)
+library(flowCore)
+source("./utils.R")
+```
+
+Load the FCS file that used to generate the csv file used as input for the XGBoost model
+```{r}
+fcs.files <- "...Path to the fcs file..."
+input_fcs <- read.FCS(fcs.files, transformation = F)
+```
+
+Load the CSV file outputed from XGBoost model
+```{r}
+csv.files <- "...Path to the csv file..."
+csvdata <- read.csv(file = csv.files, stringsAsFactors = F, row.names = 1)
+```
+
+write probability scores and UMAP coodinates into the fcs files
+```{r}
+f.adding_xgBoost_score(input_fcs = input_fcs, input_csv = csvdata ) 
+```
+
+

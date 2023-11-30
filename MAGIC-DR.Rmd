@@ -1,0 +1,287 @@
+---
+title: "Pre-Processing and Combining fcs files from 15 MRD (Seattle) negative samples"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, message = FALSE)
+```
+
+
+# Preparations
+### Load the packages
+```{r}
+rm(list = ls())
+library(tidyr)
+library(flowCore)
+library(scales)
+library(reshape2)
+source("./utils.R")
+library(uwot)
+
+```
+
+
+
+Readin fcs files
+```{r}
+path.input <- "./FCS"
+path.output <- "./DATA"
+Panels <- c("MRD1", "MRD2", "MRD3")
+
+
+new.data <- ifelse(length(grep(path.input, pattern = "NEW")) > 0, yes = T, no = F)
+sub.folder <- ifelse(new.data, yes = "NEW", no = "")
+Clean.fcs <- "TRUE"
+# Get filepaths and filenames
+fs.file_Indi <- list.files(path.input, pattern = paste0(".fcs"), full.names = T, recursive = F)
+fs.names_Indi <- list.files(path.input, pattern = paste0(".fcs"), full.names = F, recursive = F)
+PANELS <- StrExtract(fs.names_Indi, "_", 2) # get Panel info
+
+l.flowSet <- lapply(Panels, function(pnl) {
+
+  # selecting fcs files of given panel
+  fs.files <- fs.file_Indi[PANELS %in% paste0(c(""), pnl)]
+  fs.names <- fs.names_Indi[PANELS %in% paste0(c(""), pnl)]
+
+  ws <- tryCatch(openWorkspace(wsfile), error = function(x) {
+    return(1)
+  })
+  G <- tryCatch(parseWorkspace(ws, path = paste(path.input, sep = "/"), subset = fs.names[[1]], name = 1), error = function(x) {
+    return(1)
+  })
+  fs.raw <- tryCatch(regs_pop_add.flowSet(files = fs.files), error = function(x) {
+    return(1)
+  })
+ subset <- NULL 
+  if (fs.raw == 1) {
+    keep.col <- colnames(read.FCS(fs.files[1]))
+    keep.col <- keep.col[keep.col != "Event #"]
+    # row_n <- nrow(read.FCS(fs.files[1]))  # Problematic, need to change
+    if (is.null(subset)) {
+      fs.raw <- as(lapply(fs.files, function(p1) {
+        f <- read.FCS(p1, transformation = F)
+        f <- f[, keep.col]
+        return(f)
+      }), Class = "flowSet")
+    } else {
+      fs.raw <- as(lapply(fs.files, function(p1) {
+        f <- read.FCS(p1, transformation = F)
+        # keep.row <- min(length(keep.row), nrow(f))
+        keep.row <- sample(1:nrow(f), min(nrow(f), subset))
+        f <- f[keep.row, keep.col]
+        return(f)
+      }), Class = "flowSet")
+    }
+  }
+
+  sampleNames(fs.raw) <- fs.names
+
+  return(fs.raw)
+})
+
+names(l.flowSet) <- Panels 
+# you can check the content here
+l.flowSet[[1]][[1]]
+```
+
+remove events that on the edges of FSC-A and SSC-A, subset after removal of margin events
+```{r}
+subset <- 5000 #NULL
+
+l.flowSet_Margin <- lapply(Panels, function(pnl) {
+
+  # Creating margin gates to remove those events that on the axis
+  margin.gates <- fsApply(l.flowSet[[pnl]], removeMargins, c("FSC-A", "SSC-A"), return.gate = T)
+  rg <- lapply(1:nrow(margin.gates), function(x) {
+    return(rectangleGate(
+      filterId = "Margin", "FSC-A" = c(1, margin.gates[x, 1]),
+      "SSC-A" = c(1, margin.gates[x, 2])
+    ))
+  })
+
+  names(rg) <- sampleNames(l.flowSet[[pnl]])
+  gs <- GatingSet(l.flowSet[[pnl]])
+  nodeID1 <- gs_pop_add(gs, rg) # ,"Margin")
+  recompute(gs)
+
+  fs <- gs_pop_get_data(gs, "Margin")
+  fs
+
+
+  # Subset
+  if (is.null(subset)) { } else {
+    fs <- fsApply(fs, function(f) {
+      keep.row <- sample(1:nrow(f), min(nrow(f), subset))
+      f <- f[keep.row, ]
+      return(f)
+    })
+  }
+})
+names(l.flowSet_Margin) <- Panels
+```
+
+
+```{r}
+if(is.null(subset)){s <- "Full"}else{s <- paste0(subset/1000,"K")}
+save(l.flowSet_Margin, file = paste0("./DATA/l.flowSet_Margin_",s, ".Rdata"))
+```
+l.flowSet_Margin will be used as basis for export the fcs files
+
+
+
+### Compensations, remove events that on the edges and perform Transformation based on pre_calculated parameters
+```{r}
+
+Transformation_parameters <- "Pre_Calculated" # Using precalculated transformation parameters
+
+l.flowSet_Comped_Margin_Trans <- lapply(Panels, function(pnl) {
+  gs <- GatingSet(l.flowSet_Margin[[pnl]])
+
+  # comp matrix from every file
+  comp.list <- fsApply(l.flowSet_Margin[[pnl]], function(f) compensation(f@description$`$SPILLOVER`))
+
+
+  gs <- compensate(gs, comp.list)
+  recompute(gs)
+  fs <- gs_pop_get_data(gs, "root")
+
+  # Transformation parameters
+  load(file = paste0("./DATA/", pnl, "_trans_Global.Rdata"))
+
+  # Finding markers & transforming
+  if (grepl("MRD1", pnl)) {
+    markers <- c("CD7", "CD56", "CD34", "CD117", "CD33", "CD38", "HLA-DR", "CD13", "CD45", "CD133", "CD2")
+  } else if (grepl("MRD2", pnl)) {
+    markers <- c("CD15", "CD22", "CD34", "CD117", "CD19", "CD38", "HLA-DR", "CD13", "CD45", "CD10", "CD33","CD123")
+  } else if (grepl("MRD3", pnl)) {
+    markers <- c("CD36", "CD14", "CD34", "CD117", "CD11b", "CD64", "HLA-DR", "CD13", "CD45", "CD4", "CD33", "CD123")
+  }
+  markers
+  channels <-c("APC-A", "APC-H7-A", "APC-R700-A", "BV421-A", "BV605-A", "BV711-A",
+    "BV786-A", "FITC-A", "PE-A", "PE-Cy7-A", "PerCP-Cy5.5-A", "V500-C-A")
+  channels.ind <- Find.markers(fs[[1]], markers)
+  #t.chans <- which(colnames(fs[[1]]) %in% channels) # Get index of the trans channel
+  
+  t.chans <- unlist ( lapply(channels, function(x) {which (colnames(fs[[1]]) == x)} )  )
+  
+  if (Transformation_parameters == "Pre_Calculated") {
+    gs <- transform.flow_pre_cal(gs, p_preC = p.global, trans.chans = t.chans)
+  } else {
+    gs <- transform.flow(gs, remove.outliers = T, sd.coeff = 4, trans.chans = t.chans)
+  }
+
+  fs <- gs_pop_get_data(gs, "root")
+
+  fs
+})
+names(l.flowSet_Comped_Margin_Trans) <- Panels
+```
+
+Get expression data
+```{r}
+l.exprs <- lapply(Panels, function(pnl) {
+  fs <- l.flowSet_Comped_Margin_Trans[[pnl]]
+  l.dat <- lapply(sampleNames(fs), function(x) {
+    df <- exprs(fs[[x]]) # get the data
+    # replace the channel names with marker names
+    desc <- fs[[x]]@parameters@data$desc
+    desc[is.na(desc)] <- ""
+    colnames(df) <- paste(desc, fs[[x]]@parameters@data$name, sep = " ")
+    df <- df[, !colnames(df) %in% " Time"]
+    colnames(df) <- gsub(" FSC", "FSC", colnames(df))
+    colnames(df) <- gsub(" SSC", "SSC", colnames(df))
+    colnames(df) <- gsub("<", "", colnames(df))
+    colnames(df) <- gsub(">", "", colnames(df))
+    colnames(df) <- StrExtract(colnames(df), " ", 1)
+    df <- as.data.frame(df)
+    df$sample <- x
+    df$sample <- gsub(".fcs", "", df$sample)
+    df
+    # fsc and ssc is not transformed and scaled here
+  })
+
+  names(l.dat) <- sampleNames(fs)
+  l.dat
+})
+names(l.exprs) <- Panels
+```
+
+```{r}
+save(l.exprs, file = paste0(path.output,"/l.exprs_",s, ".Rdata"))
+```
+
+
+```{r}
+
+load(file =  paste0(path.output,"/l.exprs_",s, ".Rdata") )
+Pop ="blast"
+
+l.clustering_channels <- list(
+  MRD1 = c("CD7", "CD56", "CD34", "CD117", "CD33", "CD38", "HLA-DR", "CD13", "CD45", "CD133", "CD2"),
+  MRD2 = c("CD15", "CD22", "CD34", "CD117", "CD19", "CD38", "HLA-DR", "CD13", "CD45", "CD10", "CD33", "CD123"),
+  MRD3 = c("CD36", "CD14", "CD34", "CD117", # "CD11b", CD11b is inconsistent between early and later samples
+    "CD64", "HLA-DR", "CD13", "CD45", "CD4", "CD33", "CD123"
+  )
+)
+
+
+  lapply(names(l.exprs), function(spl) {
+
+  # Generate a data frame all samples
+  df <- do.call(rbind, lapply(l.exprs[[spl]], function(x) {
+    x[, c("FSC-A", "SSC-A", l.clustering_channels[[spl]], "sample")]
+  }))
+
+  # Transform the FSC and SSC using arcsine transformation
+  #---------------------------------------
+  a <- c <- 0
+  b <- 0.004
+  df[, c("FSC-A", "SSC-A")] <- apply(df[, c("FSC-A", "SSC-A")], 2, function(x) {
+    asinh(a + b * x) + c
+  })
+  adj.value <- max(df[, c("FSC-A", "SSC-A")]) - max(df[, colnames(df) %in% l.clustering_channels[[spl]]])
+  df[, c("FSC-A", "SSC-A")] <- df[, c("FSC-A", "SSC-A")] - adj.value
+  
+  
+  
+  set.seed(23)
+  nn =30
+  
+  umap <- umap(as.matrix(df[,-ncol(df)]),
+    n_neighbors = nn, metric = "euclidean", min_dist = 0.3, # Smallar neighbours number give better sepration
+    # learning_rate = 0.5,
+    verbose = TRUE, n_threads = max(1, (RcppParallel::defaultNumThreads() - 1)),
+    init = "random"
+  )
+  
+  colnames(umap) <- c("umap1", "umap2")
+  
+
+  
+      write.csv(cbind(df[,-ncol(df)], umap), file = paste0("./csv/", 
+                                            Pop,"_",spl, ".csv") ) 
+  
+  
+
+  
+      
+      
+      
+          
+  
+  
+  
+})
+
+```
+
+
+
+
