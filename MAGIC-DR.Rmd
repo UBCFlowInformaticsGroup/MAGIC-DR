@@ -1,5 +1,5 @@
 ---
-title: "Pre-Processing and Combining fcs files from 15 MRD (Seattle) negative samples"
+title: "Example of Pre-Precessing FCS files for running umap (in R) and xgBoost based classife r(in Python)"
 output:
   html_document:
     code_folding: hide
